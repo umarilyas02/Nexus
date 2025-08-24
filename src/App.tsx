@@ -1,4 +1,3 @@
-import React from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider } from './context/AuthContext';
 
@@ -28,7 +27,10 @@ import { HelpPage } from './pages/help/HelpPage';
 import { DealsPage } from './pages/deals/DealsPage';
 
 // Chat Pages
-import { ChatPage } from './pages/chat/ChatPage';
+import { ChatPage } from './pages/chat/ChatPage'
+
+// Video Call Page
+import { VideoCall } from './pages/videocall/VideoCall';
 
 function App() {
   return (
@@ -95,6 +97,9 @@ function App() {
           
           {/* Catch all other routes and redirect to login */}
           <Route path="*" element={<Navigate to="/login" replace />} />
+
+          {/* Video Call Route */}
+          <Route path="/videocall/:meetingId" element={<VideoCall />} />
         </Routes>
       </Router>
     </AuthProvider>
