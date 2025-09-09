@@ -29,6 +29,7 @@ export const VideoCall: React.FC = () => {
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
+  const iceQueueRef = useRef<RTCIceCandidateInit[]>([]); // queue for ICE candidates
 
   const [status, setStatus] = useState<string>('Connecting...');
   const [error, setError] = useState<string | null>(null);
@@ -49,16 +50,13 @@ export const VideoCall: React.FC = () => {
         pcRef.current = new RTCPeerConnection(ICE_SERVERS);
 
         pcRef.current.oniceconnectionstatechange = () => {
-          console.debug('ICE connection state:', pcRef.current?.iceConnectionState);
           const s = pcRef.current?.iceConnectionState;
           if (s === 'connected' || s === 'completed') setStatus('Connected');
           else if (s === 'failed' || s === 'disconnected') setStatus('Disconnected');
         };
 
         pcRef.current.onconnectionstatechange = () => {
-          console.debug('Peer connection state:', pcRef.current?.connectionState);
-          const s = pcRef.current?.connectionState;
-          if (s === 'connected') setStatus('Connected');
+          if (pcRef.current?.connectionState === 'connected') setStatus('Connected');
         };
 
         const localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
@@ -66,7 +64,6 @@ export const VideoCall: React.FC = () => {
         localStream.getTracks().forEach((track) => pcRef.current?.addTrack(track, localStream));
 
         pcRef.current.ontrack = (event) => {
-          console.debug('ontrack event', event);
           if (remoteVideoRef.current) {
             remoteVideoRef.current.srcObject = event.streams[0];
             setStatus('Connected');
@@ -79,36 +76,22 @@ export const VideoCall: React.FC = () => {
 
         const meetingSnapshot = await getDoc(meetingRef);
         const isOfferer = !meetingSnapshot.exists() || !meetingSnapshot.data()?.offer;
-        console.debug('isOfferer:', isOfferer);
 
-        // 🔥 FIX: force ICE writes + logs
+        // handle ICE candidates
         pcRef.current.onicecandidate = (event) => {
-          console.debug('ICE candidate event fired:', event.candidate);
           if (event.candidate) {
             const payload = event.candidate.toJSON();
             const targetRef = isOfferer ? offerCandidatesRef : answerCandidatesRef;
-            addDoc(targetRef, payload)
-              .then(() => console.debug('✅ ICE candidate added:', payload))
-              .catch((err) => console.error('🔥 Failed to write ICE candidate:', err));
-          } else {
-            console.debug('ICE gathering complete');
+            addDoc(targetRef, payload).catch((err) => console.error('Failed to add ICE:', err));
           }
         };
 
-        // Always listen for both
+        // listen for remote ICE
         unsubOfferCandidates = onSnapshot(offerCandidatesRef, (snap: QuerySnapshot) => {
           snap.docChanges().forEach((change) => {
             if (change.type === 'added') {
               const data = change.doc.data();
-              console.debug('📥 Incoming offerCandidate from Firestore:', data);
-              try {
-                const candidate = new RTCIceCandidate(data);
-                pcRef.current?.addIceCandidate(candidate).catch((err) => {
-                  console.warn('addIceCandidate (offerCandidates) failed:', err);
-                });
-              } catch (err) {
-                console.warn('Invalid ICE candidate from offerCandidates:', err, data);
-              }
+              handleRemoteCandidate(data);
             }
           });
         });
@@ -117,93 +100,92 @@ export const VideoCall: React.FC = () => {
           snap.docChanges().forEach((change) => {
             if (change.type === 'added') {
               const data = change.doc.data();
-              console.debug('📥 Incoming answerCandidate from Firestore:', data);
-              try {
-                const candidate = new RTCIceCandidate(data);
-                pcRef.current?.addIceCandidate(candidate).catch((err) => {
-                  console.warn('addIceCandidate (answerCandidates) failed:', err);
-                });
-              } catch (err) {
-                console.warn('Invalid ICE candidate from answerCandidates:', err, data);
-              }
+              handleRemoteCandidate(data);
             }
           });
         });
 
+        const handleRemoteCandidate = (data: any) => {
+          const candidate = new RTCIceCandidate(data);
+          if (pcRef.current?.remoteDescription) {
+            pcRef.current.addIceCandidate(candidate).catch((err) => console.warn('ICE failed:', err));
+          } else {
+            iceQueueRef.current.push(data);
+          }
+        };
+
         if (isOfferer) {
           const offerDescription = await pcRef.current.createOffer();
           await pcRef.current.setLocalDescription(offerDescription);
-
-          const offer = { type: offerDescription.type, sdp: offerDescription.sdp };
-          await setDoc(meetingRef, { offer }, { merge: true });
-          console.debug('Offer written to Firestore');
+          await setDoc(meetingRef, { offer: offerDescription, active: true }, { merge: true });
 
           unsubMeetingDoc = onSnapshot(meetingRef, async (snapshot) => {
             const data = snapshot.data();
-            if (!data) return;
-            if (data.answer && pcRef.current && !pcRef.current.currentRemoteDescription) {
-              try {
-                await pcRef.current.setRemoteDescription(new RTCSessionDescription(data.answer));
-                console.debug('Offerer set remote description (answer)');
-                setStatus('Connected');
-              } catch (err) {
-                console.error('Offerer failed to set remote description:', err);
-              }
+            if (data?.answer && pcRef.current && !pcRef.current.currentRemoteDescription) {
+              await pcRef.current.setRemoteDescription(new RTCSessionDescription(data.answer));
+              flushIceQueue();
+              setStatus('Connected');
             }
           });
         } else {
           const offer = meetingSnapshot.data()?.offer;
-          if (!offer) throw new Error('Offer missing on meeting doc for answerer');
+          if (!offer) throw new Error('No offer found for meeting');
 
           await pcRef.current.setRemoteDescription(new RTCSessionDescription(offer));
-          console.debug('Answerer set remote description (offer)');
-
           const answerDescription = await pcRef.current.createAnswer();
           await pcRef.current.setLocalDescription(answerDescription);
-
-          const answer = { type: answerDescription.type, sdp: answerDescription.sdp };
-          await updateDoc(meetingRef, { answer });
-          console.debug('Answer written to Firestore');
+          await updateDoc(meetingRef, { answer: answerDescription, active: true });
+          flushIceQueue();
         }
       } catch (err) {
-        console.error('Initialization error in VideoCall:', err);
-        setError((err as Error).message || 'Unknown error');
+        setError((err as Error).message);
         setStatus('Failed');
+      }
+    };
+
+    const flushIceQueue = () => {
+      while (iceQueueRef.current.length && pcRef.current?.remoteDescription) {
+        const candidate = new RTCIceCandidate(iceQueueRef.current.shift()!);
+        pcRef.current.addIceCandidate(candidate).catch(console.error);
       }
     };
 
     init();
 
-    return () => {
+    const handleUnload = async () => {
       try {
-        if (pcRef.current) {
-          pcRef.current.getTransceivers().forEach((t) => {
-            try { t.stop(); } catch {}
-          });
-          pcRef.current.close();
-          pcRef.current = null;
+        if (meetingId) {
+          const meetingRef = doc(db, 'client-meetings', meetingId);
+          await updateDoc(meetingRef, { active: false });
         }
-      } catch (e) {
-        console.warn('Error closing peer connection on cleanup', e);
-      }
+      } catch {}
+    };
+    window.addEventListener('beforeunload', handleUnload);
 
+    return () => {
+      window.removeEventListener('beforeunload', handleUnload);
+      if (pcRef.current) {
+        pcRef.current.getTransceivers().forEach((t) => t.stop());
+        pcRef.current.close();
+        pcRef.current = null;
+      }
       if (unsubOfferCandidates) unsubOfferCandidates();
       if (unsubAnswerCandidates) unsubAnswerCandidates();
       if (unsubMeetingDoc) unsubMeetingDoc();
     };
   }, [meetingId]);
 
-  const handleEndCall = () => {
-    try {
-      if (pcRef.current) pcRef.current.close();
-      if (localVideoRef.current?.srcObject) {
-        (localVideoRef.current.srcObject as MediaStream).getTracks().forEach((t) => t.stop());
-      }
-      if (remoteVideoRef.current?.srcObject) {
-        (remoteVideoRef.current.srcObject as MediaStream).getTracks().forEach((t) => t.stop());
-      }
-    } catch (e) {
-      console.warn('Error ending call', e);
+  const handleEndCall = async () => {
+    if (pcRef.current) pcRef.current.close();
+    if (localVideoRef.current?.srcObject) {
+      (localVideoRef.current.srcObject as MediaStream).getTracks().forEach((t) => t.stop());
+    }
+    if (remoteVideoRef.current?.srcObject) {
+      (remoteVideoRef.current.srcObject as MediaStream).getTracks().forEach((t) => t.stop());
+    }
+    if (meetingId) {
+      const meetingRef = doc(db, 'client-meetings', meetingId);
+      await updateDoc(meetingRef, { active: false });
     }
     setStatus('Disconnected');
   };

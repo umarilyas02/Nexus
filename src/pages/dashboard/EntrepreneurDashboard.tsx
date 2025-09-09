@@ -11,6 +11,7 @@ import {
   Check,
   X,
   Video,
+  Wallet,
 } from "lucide-react";
 import { Button } from "../../components/ui/Button";
 import { Card, CardBody, CardHeader } from "../../components/ui/Card";
@@ -150,20 +151,31 @@ export const EntrepreneurDashboard: React.FC = () => {
   return (
     <div className="space-y-6 animate-fade-in">
       {/* Header */}
-      <div className="flex justify-between items-center">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">
-            Welcome, {user.name}
-          </h1>
-          <p className="text-gray-600">
-            Here's what's happening with your startup today
-          </p>
-        </div>
+<div className="flex justify-between items-center">
+  <div>
+    <h1 className="text-2xl font-bold text-gray-900">
+      Welcome, {user.name}
+    </h1>
+    <p className="text-gray-600">
+      Here's what's happening with your startup today
+    </p>
+  </div>
 
-        <Link to="/investors">
-          <Button leftIcon={<PlusCircle size={18} />}>Find Investors</Button>
-        </Link>
-      </div>
+  <div className="flex items-center gap-2">
+    {/* Existing Find Investors Button */}
+    <Link to="/investors">
+      <Button leftIcon={<PlusCircle size={18} />}>Find Investors</Button>
+    </Link>
+
+    {/* New Wallet Button */}
+    <Link to="/wallet">
+      <Button leftIcon={<Wallet size={18} />} variant="secondary">
+        Wallet
+      </Button>
+    </Link>
+  </div>
+</div>
+
 
       {/* Summary cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
