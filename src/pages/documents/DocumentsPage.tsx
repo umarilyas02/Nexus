@@ -1,10 +1,19 @@
-import React from 'react';
+import React, { useState, useRef } from 'react';
 import { FileText, Upload, Download, Trash2, Share2 } from 'lucide-react';
 import { Card, CardHeader, CardBody } from '../../components/ui/Card';
 import { Button } from '../../components/ui/Button';
 import { Badge } from '../../components/ui/Badge';
 
-const documents = [
+type DocumentType = {
+  id: number;
+  name: string;
+  type: string;
+  size: string;
+  lastModified: string;
+  shared: boolean;
+};
+
+const initialDocs: DocumentType[] = [
   {
     id: 1,
     name: 'Pitch Deck 2024.pdf',
@@ -40,6 +49,44 @@ const documents = [
 ];
 
 export const DocumentsPage: React.FC = () => {
+  const [documents, setDocuments] = useState<DocumentType[]>(initialDocs);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const handleUploadClick = () => {
+    fileInputRef.current?.click();
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files) return;
+
+    const newDocs: DocumentType[] = Array.from(files).map((file, index) => {
+      const sizeInMB = (file.size / (1024 * 1024)).toFixed(2) + ' MB';
+      const fileType = file.type.includes('pdf')
+        ? 'PDF'
+        : file.type.includes('sheet')
+        ? 'Spreadsheet'
+        : file.type.includes('word') || file.name.endsWith('.docx')
+        ? 'Document'
+        : 'File';
+
+      return {
+        id: documents.length + index + 1,
+        name: file.name,
+        type: fileType,
+        size: sizeInMB,
+        lastModified: new Date(file.lastModified).toISOString().split('T')[0],
+        shared: false
+      };
+    });
+
+    setDocuments(prev => [...prev, ...newDocs]);
+  };
+
+  const handleDelete = (id: number) => {
+    setDocuments(prev => prev.filter(doc => doc.id !== id));
+  };
+
   return (
     <div className="space-y-6 animate-fade-in">
       <div className="flex justify-between items-center">
@@ -47,12 +94,21 @@ export const DocumentsPage: React.FC = () => {
           <h1 className="text-2xl font-bold text-gray-900">Documents</h1>
           <p className="text-gray-600">Manage your startup's important files</p>
         </div>
-        
-        <Button leftIcon={<Upload size={18} />}>
-          Upload Document
-        </Button>
+
+        <div>
+          <Button leftIcon={<Upload size={18} />} onClick={handleUploadClick}>
+            Upload Document
+          </Button>
+          <input
+            type="file"
+            multiple
+            className="hidden"
+            ref={fileInputRef}
+            onChange={handleFileChange}
+          />
+        </div>
       </div>
-      
+
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
         {/* Storage info */}
         <Card className="lg:col-span-1">
@@ -66,16 +122,21 @@ export const DocumentsPage: React.FC = () => {
                 <span className="font-medium text-gray-900">12.5 GB</span>
               </div>
               <div className="h-2 bg-gray-200 rounded-full">
-                <div className="h-2 bg-primary-600 rounded-full" style={{ width: '65%' }}></div>
+                <div
+                  className="h-2 bg-primary-600 rounded-full"
+                  style={{ width: '65%' }}
+                ></div>
               </div>
               <div className="flex justify-between text-sm">
                 <span className="text-gray-600">Available</span>
                 <span className="font-medium text-gray-900">7.5 GB</span>
               </div>
             </div>
-            
+
             <div className="pt-4 border-t border-gray-200">
-              <h3 className="text-sm font-medium text-gray-900 mb-2">Quick Access</h3>
+              <h3 className="text-sm font-medium text-gray-900 mb-2">
+                Quick Access
+              </h3>
               <div className="space-y-2">
                 <button className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 rounded-md">
                   Recent Files
@@ -93,7 +154,7 @@ export const DocumentsPage: React.FC = () => {
             </div>
           </CardBody>
         </Card>
-        
+
         {/* Document list */}
         <div className="lg:col-span-3">
           <Card>
@@ -118,24 +179,26 @@ export const DocumentsPage: React.FC = () => {
                     <div className="p-2 bg-primary-50 rounded-lg mr-4">
                       <FileText size={24} className="text-primary-600" />
                     </div>
-                    
+
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
                         <h3 className="text-sm font-medium text-gray-900 truncate">
                           {doc.name}
                         </h3>
                         {doc.shared && (
-                          <Badge variant="secondary" size="sm">Shared</Badge>
+                          <Badge variant="secondary" size="sm">
+                            Shared
+                          </Badge>
                         )}
                       </div>
-                      
+
                       <div className="flex items-center gap-4 mt-1 text-sm text-gray-500">
                         <span>{doc.type}</span>
                         <span>{doc.size}</span>
                         <span>Modified {doc.lastModified}</span>
                       </div>
                     </div>
-                    
+
                     <div className="flex items-center gap-2 ml-4">
                       <Button
                         variant="ghost"
@@ -145,7 +208,7 @@ export const DocumentsPage: React.FC = () => {
                       >
                         <Download size={18} />
                       </Button>
-                      
+
                       <Button
                         variant="ghost"
                         size="sm"
@@ -154,12 +217,13 @@ export const DocumentsPage: React.FC = () => {
                       >
                         <Share2 size={18} />
                       </Button>
-                      
+
                       <Button
                         variant="ghost"
                         size="sm"
                         className="p-2 text-error-600 hover:text-error-700"
                         aria-label="Delete"
+                        onClick={() => handleDelete(doc.id)}
                       >
                         <Trash2 size={18} />
                       </Button>

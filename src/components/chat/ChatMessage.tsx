@@ -1,56 +1,66 @@
-import React from 'react';
-import { formatDistanceToNow } from 'date-fns';
-import { Message } from '../../types';
-import { Avatar } from '../ui/Avatar';
-import { findUserById } from '../../data/users';
+import React, { useState, useEffect, useRef } from 'react';
+import { useParams } from 'react-router-dom';
+import { useAuth } from '../../context/AuthContext';
+import { getMessagesBetweenUsers, sendMessage } from '../../data/messages';
+import { ChatInput } from './ChatInput';
 
-interface ChatMessageProps {
-  message: Message;
-  isCurrentUser: boolean;
-}
+export const ChatMessage: React.FC = () => {
+  const { user } = useAuth();
+  const { partnerId } = useParams<{ partnerId: string }>();
+  const [chatMessages, setChatMessages] = useState(() =>
+    user && partnerId ? getMessagesBetweenUsers(user.id, partnerId) : []
+  );
+  const bottomRef = useRef<HTMLDivElement | null>(null);
 
-export const ChatMessage: React.FC<ChatMessageProps> = ({ message, isCurrentUser }) => {
-  const user = findUserById(message.senderId);
-  
-  if (!user) return null;
-  
+  if (!user || !partnerId) return null;
+
+  // Auto scroll to bottom
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [chatMessages]);
+
+  // Handle sending a new message
+  const handleSend = (content: string) => {
+    if (!content.trim()) return;
+
+    const newMsg = sendMessage({
+      senderId: user.id,
+      receiverId: partnerId,
+      content,
+    });
+
+    setChatMessages((prev) => [...prev, newMsg]);
+  };
+
   return (
-    <div
-      className={`flex ${isCurrentUser ? 'justify-end' : 'justify-start'} mb-4 animate-fade-in`}
-    >
-      {!isCurrentUser && (
-        <Avatar
-          src={user.avatarUrl}
-          alt={user.name}
-          size="sm"
-          className="mr-2 self-end"
-        />
-      )}
-      
-      <div className={`flex flex-col ${isCurrentUser ? 'items-end' : 'items-start'}`}>
-        <div
-          className={`max-w-xs sm:max-w-md px-4 py-2 rounded-lg ${
-            isCurrentUser
-              ? 'bg-primary-600 text-white rounded-br-none'
-              : 'bg-gray-100 text-gray-800 rounded-bl-none'
-          }`}
-        >
-          <p className="text-sm">{message.content}</p>
-        </div>
-        
-        <span className="text-xs text-gray-500 mt-1">
-          {formatDistanceToNow(new Date(message.timestamp), { addSuffix: true })}
-        </span>
+    <div className="h-[calc(100vh-8rem)] bg-white rounded-lg shadow-sm border border-gray-200 flex flex-col">
+      {/* Messages */}
+      <div className="flex-1 overflow-y-auto p-4 space-y-3">
+        {chatMessages.map((msg) => (
+          <div
+            key={msg.id}
+            className={`flex ${
+              msg.senderId === user.id ? 'justify-end' : 'justify-start'
+            }`}
+          >
+            <div
+              className={`px-4 py-2 rounded-2xl text-sm max-w-xs ${
+                msg.senderId === user.id
+                  ? 'bg-blue-500 text-white'
+                  : 'bg-gray-100 text-gray-800'
+              }`}
+            >
+              {msg.content}
+            </div>
+          </div>
+        ))}
+        <div ref={bottomRef} />
       </div>
-      
-      {isCurrentUser && (
-        <Avatar
-          src={user.avatarUrl}
-          alt={user.name}
-          size="sm"
-          className="ml-2 self-end"
-        />
-      )}
+
+      {/* Input */}
+      <div className="border-t border-gray-200 p-3">
+        <ChatInput onSend={handleSend} />
+      </div>
     </div>
   );
 };
