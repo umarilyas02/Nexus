@@ -1,146 +1,241 @@
 // src/pages/VideoCall.tsx
-
 import React, { useEffect, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
-import Peer from 'simple-peer';
 import { db } from '../../firebase';
-import { doc, getDoc, collection, addDoc, onSnapshot, updateDoc, deleteDoc } from 'firebase/firestore';
+import {
+  doc,
+  getDoc,
+  setDoc,
+  updateDoc,
+  collection,
+  addDoc,
+  onSnapshot,
+  QuerySnapshot,
+} from 'firebase/firestore';
+
+const ICE_SERVERS: RTCConfiguration = {
+  iceServers: [
+    { urls: ['stun:stun.l.google.com:19302'] },
+    {
+      urls: ['turn:openrelay.metered.ca:80'],
+      username: 'openrelayproject',
+      credential: 'openrelayproject',
+    },
+  ],
+};
 
 export const VideoCall: React.FC = () => {
   const { meetingId } = useParams<{ meetingId: string }>();
+  const localVideoRef = useRef<HTMLVideoElement | null>(null);
+  const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
+  const pcRef = useRef<RTCPeerConnection | null>(null);
 
-  const [stream, setStream] = useState<MediaStream>();
-  const [peerStream, setPeerStream] = useState<MediaStream>();
-  const [callStatus, setCallStatus] = useState('Connecting...');
-
-  const myVideo = useRef<HTMLVideoElement>(null);
-  const peerVideo = useRef<HTMLVideoElement>(null);
-  const peerRef = useRef<Peer.Instance>();
+  const [status, setStatus] = useState<string>('Connecting...');
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!meetingId) return;
+    if (!meetingId) {
+      setError('Missing meeting id');
+      setStatus('Failed');
+      return;
+    }
 
-    navigator.mediaDevices.getUserMedia({ video: true, audio: true })
-      .then(currentStream => {
-        setStream(currentStream);
-        if (myVideo.current) {
-          myVideo.current.srcObject = currentStream;
-        }
+    let unsubOfferCandidates: (() => void) | null = null;
+    let unsubAnswerCandidates: (() => void) | null = null;
+    let unsubMeetingDoc: (() => void) | null = null;
 
-        const callDocRef = doc(db, 'client-meetings', meetingId);
-        const offersCollection = collection(callDocRef, 'offers');
-        const answersCollection = collection(callDocRef, 'answers');
+    const init = async () => {
+      try {
+        pcRef.current = new RTCPeerConnection(ICE_SERVERS);
 
-        // Check if we are the initiator or the receiver
-        getDoc(callDocRef).then(async docSnap => {
-          if (!docSnap.exists() || docSnap.data().status !== 'accepted') {
-            setCallStatus('Invalid or unaccepted meeting.');
-            return;
+        pcRef.current.oniceconnectionstatechange = () => {
+          console.debug('ICE connection state:', pcRef.current?.iceConnectionState);
+          const s = pcRef.current?.iceConnectionState;
+          if (s === 'connected' || s === 'completed') setStatus('Connected');
+          else if (s === 'failed' || s === 'disconnected') setStatus('Disconnected');
+        };
+
+        pcRef.current.onconnectionstatechange = () => {
+          console.debug('Peer connection state:', pcRef.current?.connectionState);
+          const s = pcRef.current?.connectionState;
+          if (s === 'connected') setStatus('Connected');
+        };
+
+        const localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        if (localVideoRef.current) localVideoRef.current.srcObject = localStream;
+        localStream.getTracks().forEach((track) => pcRef.current?.addTrack(track, localStream));
+
+        pcRef.current.ontrack = (event) => {
+          console.debug('ontrack event', event);
+          if (remoteVideoRef.current) {
+            remoteVideoRef.current.srcObject = event.streams[0];
+            setStatus('Connected');
           }
+        };
 
-          const offerCandidates = collection(offersCollection, 'candidates');
-          const answerCandidates = collection(answersCollection, 'candidates');
+        const meetingRef = doc(db, 'client-meetings', meetingId);
+        const offerCandidatesRef = collection(meetingRef, 'offerCandidates');
+        const answerCandidatesRef = collection(meetingRef, 'answerCandidates');
 
-          const isInitiator = !(await getDoc(doc(offersCollection, 'offer'))).exists();
-          setCallStatus(isInitiator ? 'Creating Call...' : 'Joining Call...');
+        const meetingSnapshot = await getDoc(meetingRef);
+        const isOfferer = !meetingSnapshot.exists() || !meetingSnapshot.data()?.offer;
+        console.debug('isOfferer:', isOfferer);
 
-          const peer = new Peer({
-            initiator: isInitiator,
-            trickle: true,
-            stream: currentStream,
-          });
+        // 🔥 FIX: force ICE writes + logs
+        pcRef.current.onicecandidate = (event) => {
+          console.debug('ICE candidate event fired:', event.candidate);
+          if (event.candidate) {
+            const payload = event.candidate.toJSON();
+            const targetRef = isOfferer ? offerCandidatesRef : answerCandidatesRef;
+            addDoc(targetRef, payload)
+              .then(() => console.debug('✅ ICE candidate added:', payload))
+              .catch((err) => console.error('🔥 Failed to write ICE candidate:', err));
+          } else {
+            console.debug('ICE gathering complete');
+          }
+        };
 
-          peerRef.current = peer;
-
-          // Listen for signaling data and send it via Firestore
-          peer.on('signal', async (data) => {
-            if (isInitiator) {
-              await addDoc(offersCollection, { offer: data });
-            } else {
-              await addDoc(answersCollection, { answer: data });
+        // Always listen for both
+        unsubOfferCandidates = onSnapshot(offerCandidatesRef, (snap: QuerySnapshot) => {
+          snap.docChanges().forEach((change) => {
+            if (change.type === 'added') {
+              const data = change.doc.data();
+              console.debug('📥 Incoming offerCandidate from Firestore:', data);
+              try {
+                const candidate = new RTCIceCandidate(data);
+                pcRef.current?.addIceCandidate(candidate).catch((err) => {
+                  console.warn('addIceCandidate (offerCandidates) failed:', err);
+                });
+              } catch (err) {
+                console.warn('Invalid ICE candidate from offerCandidates:', err, data);
+              }
             }
           });
-
-          // Listen for the remote stream
-          peer.on('stream', remoteStream => {
-            setPeerStream(remoteStream);
-            if (peerVideo.current) {
-              peerVideo.current.srcObject = remoteStream;
-            }
-            setCallStatus('Connected');
-          });
-
-          peer.on('close', () => {
-            // Handle cleanup
-            setCallStatus('Call Ended');
-            currentStream.getTracks().forEach(track => track.stop());
-          });
-          
-          // Listen for offers if we are the receiver
-          if (!isInitiator) {
-            onSnapshot(offersCollection, snapshot => {
-              snapshot.docChanges().forEach(change => {
-                if (change.type === 'added') {
-                   peer.signal(change.doc.data().offer);
-                }
-              });
-            });
-          }
-          
-          // Listen for answers if we are the initiator
-          if (isInitiator) {
-             onSnapshot(answersCollection, snapshot => {
-              snapshot.docChanges().forEach(change => {
-                if (change.type === 'added') {
-                   peer.signal(change.doc.data().answer);
-                }
-              });
-            });
-          }
         });
-      })
-      .catch(err => {
-        console.error('Failed to get user media', err);
-        setCallStatus('Camera/Mic access denied.');
-      });
 
-    // Cleanup on unmount
+        unsubAnswerCandidates = onSnapshot(answerCandidatesRef, (snap: QuerySnapshot) => {
+          snap.docChanges().forEach((change) => {
+            if (change.type === 'added') {
+              const data = change.doc.data();
+              console.debug('📥 Incoming answerCandidate from Firestore:', data);
+              try {
+                const candidate = new RTCIceCandidate(data);
+                pcRef.current?.addIceCandidate(candidate).catch((err) => {
+                  console.warn('addIceCandidate (answerCandidates) failed:', err);
+                });
+              } catch (err) {
+                console.warn('Invalid ICE candidate from answerCandidates:', err, data);
+              }
+            }
+          });
+        });
+
+        if (isOfferer) {
+          const offerDescription = await pcRef.current.createOffer();
+          await pcRef.current.setLocalDescription(offerDescription);
+
+          const offer = { type: offerDescription.type, sdp: offerDescription.sdp };
+          await setDoc(meetingRef, { offer }, { merge: true });
+          console.debug('Offer written to Firestore');
+
+          unsubMeetingDoc = onSnapshot(meetingRef, async (snapshot) => {
+            const data = snapshot.data();
+            if (!data) return;
+            if (data.answer && pcRef.current && !pcRef.current.currentRemoteDescription) {
+              try {
+                await pcRef.current.setRemoteDescription(new RTCSessionDescription(data.answer));
+                console.debug('Offerer set remote description (answer)');
+                setStatus('Connected');
+              } catch (err) {
+                console.error('Offerer failed to set remote description:', err);
+              }
+            }
+          });
+        } else {
+          const offer = meetingSnapshot.data()?.offer;
+          if (!offer) throw new Error('Offer missing on meeting doc for answerer');
+
+          await pcRef.current.setRemoteDescription(new RTCSessionDescription(offer));
+          console.debug('Answerer set remote description (offer)');
+
+          const answerDescription = await pcRef.current.createAnswer();
+          await pcRef.current.setLocalDescription(answerDescription);
+
+          const answer = { type: answerDescription.type, sdp: answerDescription.sdp };
+          await updateDoc(meetingRef, { answer });
+          console.debug('Answer written to Firestore');
+        }
+      } catch (err) {
+        console.error('Initialization error in VideoCall:', err);
+        setError((err as Error).message || 'Unknown error');
+        setStatus('Failed');
+      }
+    };
+
+    init();
+
     return () => {
-      peerRef.current?.destroy();
-      stream?.getTracks().forEach(track => track.stop());
+      try {
+        if (pcRef.current) {
+          pcRef.current.getTransceivers().forEach((t) => {
+            try { t.stop(); } catch {}
+          });
+          pcRef.current.close();
+          pcRef.current = null;
+        }
+      } catch (e) {
+        console.warn('Error closing peer connection on cleanup', e);
+      }
+
+      if (unsubOfferCandidates) unsubOfferCandidates();
+      if (unsubAnswerCandidates) unsubAnswerCandidates();
+      if (unsubMeetingDoc) unsubMeetingDoc();
     };
   }, [meetingId]);
 
-  return (
-    <div className="p-4 bg-gray-900 min-h-screen flex flex-col items-center justify-center text-white">
-      <h1 className="text-2xl font-bold mb-4">Meeting ID: {meetingId}</h1>
-      <p className="mb-4">{callStatus}</p>
-      
-      <div className="relative w-full max-w-4xl aspect-video bg-black rounded-lg overflow-hidden">
-        {/* Peer Video (Full screen) */}
-        <video
-          ref={peerVideo}
-          playsInline
-          autoPlay
-          className="w-full h-full object-cover"
-        />
+  const handleEndCall = () => {
+    try {
+      if (pcRef.current) pcRef.current.close();
+      if (localVideoRef.current?.srcObject) {
+        (localVideoRef.current.srcObject as MediaStream).getTracks().forEach((t) => t.stop());
+      }
+      if (remoteVideoRef.current?.srcObject) {
+        (remoteVideoRef.current.srcObject as MediaStream).getTracks().forEach((t) => t.stop());
+      }
+    } catch (e) {
+      console.warn('Error ending call', e);
+    }
+    setStatus('Disconnected');
+  };
 
-        {/* My Video (Picture-in-picture style) */}
-        <video
-          ref={myVideo}
-          playsInline
-          muted
-          autoPlay
-          className="absolute top-4 right-4 w-1/4 max-w-[200px] border-2 border-gray-500 rounded-md"
-        />
+  return (
+    <div className="flex flex-col items-center justify-center h-screen bg-gray-900 text-white space-y-4 p-4">
+      <div className="text-center">
+        <h1 className="text-xl font-bold">{status}</h1>
+        {error && <p className="text-sm text-red-400 mt-2">Error: {error}</p>}
       </div>
 
-       <button 
-         onClick={() => peerRef.current?.destroy()}
-         className="mt-6 px-6 py-2 bg-red-600 rounded-full hover:bg-red-700 transition"
-       >
-         End Call
-       </button>
+      <div className="flex gap-4 flex-wrap justify-center">
+        <div>
+          <h2 className="text-sm text-gray-300 mb-1">You</h2>
+          <video ref={localVideoRef} autoPlay playsInline muted className="w-72 h-56 bg-black rounded" />
+        </div>
+        <div>
+          <h2 className="text-sm text-gray-300 mb-1">Remote</h2>
+          <video ref={remoteVideoRef} autoPlay playsInline className="w-72 h-56 bg-black rounded" />
+        </div>
+      </div>
+
+      <div className="flex gap-3">
+        <button
+          onClick={handleEndCall}
+          className="mt-4 px-4 py-2 bg-red-600 rounded hover:bg-red-700 transition"
+        >
+          End Call
+        </button>
+      </div>
     </div>
   );
 };
+
+export default VideoCall;

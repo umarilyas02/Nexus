@@ -41,7 +41,7 @@ type MeetingDoc = {
   id?: string;
   entrepreneurId?: string;
   investorId?: string;
-  investorName?: string; // <-- ADDED
+  investorName?: string;
   date?: string;
   status?: 'pending' | 'accepted' | 'rejected';
   meetingLink?: string;
@@ -67,8 +67,10 @@ export const EntrepreneurProfile: React.FC = () => {
 
   // stable investor id: prefer auth uid, fallback to anon stored in localStorage
   const getInvestorId = useCallback(() => {
-    const maybeId = (currentUser as any)?.id;
-    if (maybeId) return maybeId;
+    const maybeId = (currentCurrentUserIdCheck(currentUser) as any) && (currentUser as any).id;
+    // note: above is defensive but we'll just use currentUser normally
+    const maybe = (currentUser as any)?.id;
+    if (maybe) return maybe;
     const key = 'anonInvestorId';
     let anon = localStorage.getItem(key);
     if (!anon) {
@@ -146,14 +148,15 @@ export const EntrepreneurProfile: React.FC = () => {
         // if rejected or other, we allow overwrite/reschedule
       }
 
-      // Build payload *without* undefined fields (do not include meetingLink when scheduling)
-      const payload = {
+      // Build payload and include a pre-created meetingLink so both sides read same link
+      const payload: MeetingDoc = {
         entrepreneurId: entrepreneur.id,
         investorId: invId,
-        investorName: (currentUser as any)?.name || 'Anonymous Investor', // <-- ADDED
+        investorName: (currentUser as any)?.name || 'Anonymous Investor',
         date: selectedDate.toISOString(),
         status: 'pending',
         createdAt: new Date().toISOString(),
+        meetingLink: `/videocall/${meetingId}`, // <-- important: pre-create link
       };
 
       // Write to deterministic ID (prevents duplicates)
@@ -171,24 +174,29 @@ export const EntrepreneurProfile: React.FC = () => {
     }
   };
 
-  // Render investor-facing button(s)
+  // Render the appropriate button based on meeting state
   const renderInvestorButton = () => {
-    // if a meeting doc exists for this pair...
     if (myMeeting) {
       if (myMeeting.status === 'pending') {
         return <Button variant="outline" disabled>Pending Approval</Button>;
       }
       if (myMeeting.status === 'accepted') {
-        // safe use: meetingLink may be undefined — fallback to internal route
-        const href = myMeeting.meetingLink || `/videocall/${myMeeting.id}`;
+        // prefer the stored meetingLink; if missing, fallback to deterministic /videocall/<meetingId>
+        const invId = getInvestorId();
+        const meetingId = buildMeetingDocId(invId, entrepreneur!.id);
+        const link = myMeeting.meetingLink || `/videocall/${meetingId}` || (myMeeting.id ? `/videocall/${myMeeting.id}` : `/videocall/${meetingId}`);
         return (
-          <a href={href} target="_blank" rel="noopener noreferrer">
-            <Button variant="primary">Join Call</Button>
-          </a>
+          <a
+  href={myMeeting.meetingLink || `/videocall/${myMeeting.id}`}
+  target="_blank"
+  rel="noopener noreferrer"
+>
+  <Button variant="primary">Join Call</Button>
+</a>
+
         );
       }
       if (myMeeting.status === 'rejected') {
-        // allow reschedule when rejected (show both a disabled label and reschedule action)
         return (
           <div className="flex items-center gap-2">
             <Button variant="outline" disabled>Request Rejected</Button>
@@ -198,7 +206,6 @@ export const EntrepreneurProfile: React.FC = () => {
       }
     }
 
-    // no meeting => show schedule
     return (
       <Button leftIcon={<Calendar size={18} />} onClick={() => setShowDatePicker(s => !s)}>
         Schedule Meeting
@@ -262,7 +269,7 @@ export const EntrepreneurProfile: React.FC = () => {
                 {isInvestor && (
                   <Button
                     leftIcon={<Send size={18} />}
-                    disabled={getRequestsFromInvestor((currentUser as any)?.id || getInvestorId()).some((req) => req.entrepreneurId === entrepreneur.id)}
+                    disabled={getRequestsFromInvestor((currentCurrentUserIdCheck(currentUser) as any)?.id || getInvestorId()).some((req) => req.entrepreneurId === entrepreneur.id)}
                     onClick={() => {
                       if ((currentUser as any)?.id) {
                         createCollaborationRequest((currentUser as any).id, entrepreneur.id, `I'm interested in learning more about ${entrepreneur.startupName}.`);
@@ -520,3 +527,8 @@ export const EntrepreneurProfile: React.FC = () => {
 };
 
 export default EntrepreneurProfile;
+
+// small helper used above for defensive check prevents TS error
+function currentCurrentUserIdCheck(u: any) {
+  return u;
+}
