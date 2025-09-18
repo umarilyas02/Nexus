@@ -29,7 +29,7 @@ export const VideoCall: React.FC = () => {
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
-  const iceQueueRef = useRef<RTCIceCandidateInit[]>([]); // queue for ICE candidates
+  const iceQueueRef = useRef<RTCIceCandidateInit[]>([]);
 
   const [status, setStatus] = useState<string>('Connecting...');
   const [error, setError] = useState<string | null>(null);
@@ -77,7 +77,7 @@ export const VideoCall: React.FC = () => {
         const meetingSnapshot = await getDoc(meetingRef);
         const isOfferer = !meetingSnapshot.exists() || !meetingSnapshot.data()?.offer;
 
-        // handle ICE candidates
+        // handle local ICE candidates
         pcRef.current.onicecandidate = (event) => {
           if (event.candidate) {
             const payload = event.candidate.toJSON();
@@ -87,24 +87,6 @@ export const VideoCall: React.FC = () => {
         };
 
         // listen for remote ICE
-        unsubOfferCandidates = onSnapshot(offerCandidatesRef, (snap: QuerySnapshot) => {
-          snap.docChanges().forEach((change) => {
-            if (change.type === 'added') {
-              const data = change.doc.data();
-              handleRemoteCandidate(data);
-            }
-          });
-        });
-
-        unsubAnswerCandidates = onSnapshot(answerCandidatesRef, (snap: QuerySnapshot) => {
-          snap.docChanges().forEach((change) => {
-            if (change.type === 'added') {
-              const data = change.doc.data();
-              handleRemoteCandidate(data);
-            }
-          });
-        });
-
         const handleRemoteCandidate = (data: any) => {
           const candidate = new RTCIceCandidate(data);
           if (pcRef.current?.remoteDescription) {
@@ -114,10 +96,34 @@ export const VideoCall: React.FC = () => {
           }
         };
 
+        unsubOfferCandidates = onSnapshot(offerCandidatesRef, (snap: QuerySnapshot) => {
+          snap.docChanges().forEach((change) => {
+            if (change.type === 'added') handleRemoteCandidate(change.doc.data());
+          });
+        });
+
+        unsubAnswerCandidates = onSnapshot(answerCandidatesRef, (snap: QuerySnapshot) => {
+          snap.docChanges().forEach((change) => {
+            if (change.type === 'added') handleRemoteCandidate(change.doc.data());
+          });
+        });
+
         if (isOfferer) {
+          // Create Offer
           const offerDescription = await pcRef.current.createOffer();
           await pcRef.current.setLocalDescription(offerDescription);
-          await setDoc(meetingRef, { offer: offerDescription, active: true }, { merge: true });
+
+          await setDoc(
+            meetingRef,
+            {
+              offer: {
+                type: offerDescription.type,
+                sdp: offerDescription.sdp,
+              },
+              active: true,
+            },
+            { merge: true }
+          );
 
           unsubMeetingDoc = onSnapshot(meetingRef, async (snapshot) => {
             const data = snapshot.data();
@@ -128,13 +134,23 @@ export const VideoCall: React.FC = () => {
             }
           });
         } else {
+          // Join as Answerer
           const offer = meetingSnapshot.data()?.offer;
           if (!offer) throw new Error('No offer found for meeting');
 
           await pcRef.current.setRemoteDescription(new RTCSessionDescription(offer));
+
           const answerDescription = await pcRef.current.createAnswer();
           await pcRef.current.setLocalDescription(answerDescription);
-          await updateDoc(meetingRef, { answer: answerDescription, active: true });
+
+          await updateDoc(meetingRef, {
+            answer: {
+              type: answerDescription.type,
+              sdp: answerDescription.sdp,
+            },
+            active: true,
+          });
+
           flushIceQueue();
         }
       } catch (err) {
@@ -221,3 +237,4 @@ export const VideoCall: React.FC = () => {
 };
 
 export default VideoCall;
+
