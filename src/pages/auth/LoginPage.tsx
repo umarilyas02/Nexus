@@ -245,8 +245,10 @@ export const LoginPage: React.FC = () => {
               </p>
             </div>
             
-            <div classname='mt-2 text-center'>
+            <div classname='mt-4 text-center flex items-center justify-center'>
+              <p>
                Developed By <a href='umarilyas.dev'>UMAR ILYAS</a>
+            </p>
                   </div>
           </div>
         </div>
