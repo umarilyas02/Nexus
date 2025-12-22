@@ -189,9 +189,7 @@ export const Navbar: React.FC = () => {
                   onClick={() => setIsMenuOpen(false)}
                 >
                   <Button fullWidth>Sign up</Button>
-                </Link><div>
-               Developed By <a href='umarilyas.dev'>UMAR ILUAS</a>
-                  </div>
+                </Link>
               </div>
             )}
           </div>
